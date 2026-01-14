@@ -1,0 +1,10 @@
+.vscode
+.venv
+backup
+blink
+i2c_test
+test_as726x
+test_veml6030
+connect.ps1
+upload.ps1
+notes.txt
