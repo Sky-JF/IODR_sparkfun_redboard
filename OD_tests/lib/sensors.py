@@ -1,6 +1,8 @@
 import qwiic_veml6030
+import qwiic_as726x
 import machine
 import sys
+
 
 def read_veml6030():
   i2c = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(21), freq=400000)

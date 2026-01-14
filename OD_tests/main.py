@@ -34,7 +34,7 @@ def start_OD_tests(configs):
   while True:
     command = get_command()
 
-    if command == "od" and not configs["blank_set"]:
+    if (command == "od" or command == "od5") and not configs["blank_set"]:
       print("Error: blank value has not been set")
       continue
 
