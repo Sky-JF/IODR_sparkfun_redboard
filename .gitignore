@@ -8,3 +8,4 @@ test_veml6030
 connect.ps1
 upload.ps1
 notes.txt
+.firmware
