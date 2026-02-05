@@ -1,0 +1,1 @@
+mpremote.exe connect auto
