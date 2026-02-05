@@ -3,31 +3,28 @@ import qwiic_as726x
 import machine
 import sys
 
+i2c = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(21), freq=400_000)
 
-def read_veml6030():
-  i2c = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(21), freq=400000)
-  veml = qwiic_veml6030.QwiicVEML6030()
+veml = qwiic_veml6030.QwiicVEML6030()
+as726x = qwiic_as726x.QwiicAS726x(i2c)
 
-  if veml.begin() == False:
+def init_veml6030():
+  if not veml.begin():
     print("veml6030 sensor not found. Check wiring.")
-  else:
-  # Example loop to read ambient light every second
-    lux = veml.read_light()
-    return lux
+    
+def read_veml6030():
+  return veml.read_light()
 
 def read_temt6000():
   sensor = machine.ADC(machine.Pin(36)) #Analog sensor connected to pin A0
   sensor.atten(machine.ADC.ATTN_11DB)
   return sensor.read()
 
-def read_as726x_yellow():
-  i2c = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(21), freq=400000)
-  myAS726x = qwiic_as726x.QwiicAS726x(i2c)
-
-  if myAS726x.is_connected() == False:
-    print("sensor not found. Check wiring", 
+def init_as726x():
+  if not as726x.is_connected():
+    print("as726x sensor not found. Check wiring", 
       file=sys.stderr)
-  else:
-    myAS726x.begin()
-    myAS726x.take_measurements()
-    return myAS726x.get_calibrated_yellow()
+    return
+  if not as726x.begin():
+    print("as726x sensor not found. Check wiring.")
+    

@@ -1,0 +1,1 @@
+mpremote.exe fs cp :data.txt ./data.txt
