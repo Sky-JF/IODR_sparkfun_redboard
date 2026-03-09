@@ -8,3 +8,6 @@ test_veml6030
 notes.txt
 .firmware
 OD_tests/data.txt
+OD_tests/images
+light_dropoff/
+*.csv

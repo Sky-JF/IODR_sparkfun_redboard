@@ -2,6 +2,7 @@ import machine
 import sys
 from time import sleep
 import sensors
+import full_setting_test as fst
 from math import log10
 
 led = machine.Pin(17, machine.Pin.OUT) # LED connected to pin 17
@@ -9,6 +10,7 @@ led_ON = 1
 led_OFF = 0
 LED_WINDUP_TIME = 0.5
 
+warning_array_size = 300
 
 """
 Configure which sensor the data should come from
@@ -30,17 +32,25 @@ def get_sensor_name(configs):
     else:
       print(f"Sensor '{sensor}' not available")
 
-
+"""
+Get a command from the user, validate it, and execute it
+"""
 def start_OD_tests(configs):
   while True:
     command = get_command()
 
+    # Check if a blank value is set before computing optical density (od is dependent on blank)
     if (command == "od" or command == "od5") and not configs["blank_set"]:
       print("Error: blank value has not been set")
       continue
 
     execute_command(configs, command)
+    if len(configs["data"]) > warning_array_size:
+      print("Warning! Data collected in this run is over 300 data points. Another read may result in a crash. Consider saving or dropping the current data before proceeding.")
 
+"""
+Get input from user, validate it, and print a status message for each command
+"""
 def get_command():
   command = input(">> ").strip().lower()
 
@@ -50,13 +60,17 @@ def get_command():
     print("\tblank\t\t\t-- Collect a blank value to use as a reference for the optical density calculation")
     print("\tcs\t\t\t-- Change the sensor being used to measure optical density")
     print("\tdrop\t\t\t-- Drop (delete) all data from the current session (does not affect data.txt)")
-    print("\tvemlconfig\t\t-- Adjust configuration settings for the veml6030 sensor")
+    print("\tfst-as726x\t\t-- Tests all the settings for the as726x sensor")
+    print("\tfst-veml6030\t\t-- Tests all the settings for the veml6030 sensor")
     print("\thelp\t\t\t-- Print a list of available commands")
     print("\tod\t\t\t-- Collect a single data point of optical density. A blank value must be collected before measuring OD.")
     print("\tod5\t\t\t-- Collect 5 data points of optical density. A blank value must be collected before measuring OD.")
-    print("\tread\t\t\t-- Read and print a sensor value")
-    print("\tread5\t\t\t-- Read and print 5 sensor values")
+    print("\tread\t\t\t-- Read and print a sensor value with the led on")
+    print("\tread5\t\t\t-- Read and print 5 sensor values with the led on")
+    print("\tread-off\t\t-- Read and print 5 sensor values with the led off")
+    print("\tread-off5\t\t-- Read and print 5 sensor values with the led off")
     print("\tsave\t\t\t-- Save all measured values of this session into a file (will overwrite files from previous sessions)")
+    print("\tvemlconfig\t\t-- Adjust configuration settings for the veml6030 sensor")
   elif command == "blank":
     print("Measuring blank value")
   elif command == "od" or command == "od5":
@@ -64,7 +78,7 @@ def get_command():
   elif command == "cs":
     print("Changing sensor")
   elif command == "read" or command == "read5":
-    print("Measuring sensor value")
+    print("Measuring sensor value with LED on")
   elif command == "vemlconfig":
     print("Configuring veml6030")
   elif command == "as726xconfig":
@@ -73,11 +87,20 @@ def get_command():
     print("Saving data from current session into data.txt")
   elif command == "drop":
     print("Dropping data from current session")
+  elif command == "read-off" or command == "read-off5":
+    print("Measuring sensor value with LED off")
+  elif command == "fst-as726x":
+    print("Testing all settings for the as726x")
+  elif command == "fst-veml6030":
+    print("Testing all settings for the veml6030")
   else:
     print("Type 'help' for a list of available commands")
   #sleep(0.5)
   return command
 
+"""
+Use the given command to execute its instruction of data collection or configuration
+"""
 def execute_command(configs, command):
   if command == "blank":
     configs["blank"] = read_light(configs)
@@ -109,10 +132,12 @@ def execute_command(configs, command):
     configs["blank_set"] = False
   elif command == "read":
     as726x_warning() # remove this later once clarified
+    j = 0
     light_in_readings = read_light(configs)
     for reading in light_in_readings:
-      print(f"Sensor value: {reading}")
+      print(f"{j}: Sensor value: {reading}")
       configs["data"].append(reading) # Make file saving prettier %%%
+      j += 1
   elif command == "read5":
     as726x_warning() # remove this later once clarified
     for i in range(5):
@@ -123,15 +148,41 @@ def execute_command(configs, command):
         configs["data"].append(reading) # Make file saving prettier %%%
         j += 1
       print()
+  elif command == "read-off":
+    as726x_warning() # remove this later once clarified
+    j = 0
+    light_in_readings = read_light(configs, led_on=False)
+    for reading in light_in_readings:
+      print(f"{j}: Sensor value: {reading}")
+      configs["data"].append(reading) # Make file saving prettier %%%
+      j += 1
+  elif command == "read-off5":
+    as726x_warning() # remove this later once clarified
+    for i in range(5):
+      j = 0
+      light_in_readings = read_light(configs, led_on=False)
+      for reading in light_in_readings:
+        print(f"{j}: Sensor value: {reading}")
+        configs["data"].append(reading) # Make file saving prettier %%%
+        j += 1
+      print()
   elif command == "vemlconfig" and configs["sensor"] == "veml6030":
-    adjust_veml6030_settings()
+    sensors.adjust_veml6030_settings()
   elif command == "as726xconfig" and configs["sensor"] == "as726x":
-    adjust_as726x_settings()
+    sensors.adjust_as726x_settings()
   elif command == "save":
     write_to_file(configs)
   elif command == "drop":
     configs["data"] = []
+  elif command == "fst-as726x":
+    fst.test_all_settings_as726x(configs)
+  elif command == "fst-veml6030":
+    fst.test_all_settings_veml6030(configs)
 
+
+"""
+Assign a color to each reading by the as726x
+"""
 def as726x_warning():
   if configs["sensor"] == "as726x":
       print("Sensor readings correspond to the following:\n" \
@@ -142,6 +193,9 @@ def as726x_warning():
       "4: Orange light in\n" \
       "5: Red light in\n")
 
+"""
+use the light in and blank value to calculate absorbance/optical density
+"""
 def compute_od(light_in, blank_val, configs):
   if (light_in > 0 and blank_val > 0):
     od = log10(blank_val/light_in)
@@ -154,11 +208,15 @@ def compute_od(light_in, blank_val, configs):
   else:
     print("Error: unknown")
 
-def read_light(configs):
+"""
+Turn the LED on for 0.5 seconds, then read values from the selected sensor
+"""
+def read_light(configs, led_on=True):
   sensor = configs["sensor"]
   #read = 0
 
-  led.value(led_ON) # turn led on
+  if (led_on):
+    led.value(led_ON) # turn led on
   sleep(LED_WINDUP_TIME)
 
   if sensor == "temt6000":
@@ -181,71 +239,9 @@ def read_light(configs):
   sleep(LED_WINDUP_TIME)
   return read
 
-def adjust_veml6030_settings():
-  print("Default settings: \nGain: 0.125\nIntegration time: 100ms\n")
-  # The set is the available gain values found in https://learn.sparkfun.com/tutorials/qwiic-ambient-light-sensor-veml6030-hookup-guide/all
-  valid_gains = (2.0, 1.0, 0.25, 0.125)
-
-  while True:
-    try:
-      gain = float(input("Insert gain value [2, 1, 0.25, 0.125]: "))
-      if gain in valid_gains:
-        break
-    except ValueError:
-      pass
-  sensors.veml.set_gain(float(gain))
-  
-  # Available integration times from webpage above
-  valid_times = (25, 50, 100, 200, 400, 800)
-
-  while True:
-    try:
-      integration_time = int(input(
-        "Insert integration time (ms) [25, 50, 100, 200, 400, 800]: "
-      ))
-      if integration_time in valid_times:
-        break
-    except ValueError:
-      pass
-  sensors.veml.set_integ_time(float(integration_time))
-
-def adjust_as726x_settings():
-  print("Default settings: \nGain: 1x\nIntegration time: 2.8 [0]\n")
-  # The set is the available gain values found in https://docs.sparkfun.com/qwiic_as726x_py/classqwiic__as726x_1_1_qwiic_a_s726x.html#a64decb58a74ea0b881e1af8649f44a0chttps://docs.sparkfun.com/qwiic_as726x_py/classqwiic__as726x_1_1_qwiic_a_s726x.html#a64decb58a74ea0b881e1af8649f44a0c
-  valid_gains = (1.0, 3.7, 16.0, 64.0)
-
-  while True:
-    try:
-      gain = float(input("Insert gain value [1, 3.7, 16, 64]: "))
-      if gain in valid_gains:
-        code = 0
-        if gain == 1.0:
-          code = 0
-        elif gain == 3.7:
-          code = 1
-        elif gain == 16.0:
-          code = 2
-        elif gain == 64.0:
-          code = 3
-        sensors.as726x.set_gain(code)
-        break
-    except ValueError:
-      pass
-  #sensors.as726x.set_gain(float(gain))
-
-  #from 0 to 255
-  while True:
-    try:
-      integration_time = int(input(
-          "Insert integration time code [0–255] (k × 2.8 ms): "
-      ))
-      if 0 <= integration_time <= 255:
-          sensors.as726x.set_integration_time(integration_time)
-          break
-    except ValueError:
-      pass
-  #sensors.as726x.set_integration_time(int(integration_time - 1))
-
+"""
+Save the data points collected in this session to a file
+"""
 def write_to_file(configs):
   with open("data.txt", "w") as f:
     for data in configs["data"]:
