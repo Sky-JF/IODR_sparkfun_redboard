@@ -1,1 +1,1 @@
-mpremote.exe connect auto fs cp ./main.py :main.py
+mpremote.exe fs cp ./main.py :main.py

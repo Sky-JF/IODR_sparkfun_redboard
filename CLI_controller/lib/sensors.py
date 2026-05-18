@@ -6,8 +6,6 @@ from time import sleep
 
 led_ON = 1
 led_OFF = 0
-LED_WINDUP_TIME = 0.5
-LED_WINDDOWN_TIME = LED_WINDUP_TIME
 
 i2c = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(21), freq=400_000)
 
@@ -121,17 +119,17 @@ def read_light(configs, led, led_on=True):
   if (led_on):
     offset = read_sensor(sensor) # led off reading
     led.value(led_ON) # turn led on
-  sleep(LED_WINDUP_TIME)
+  sleep(configs["wind_up_time"])
 
   read = read_sensor(sensor) # if led is on, get the led on reading
 
   led.value(led_OFF) #turn led off
-  sleep(LED_WINDUP_TIME)
+  sleep(configs["wind_down_time"])
 
   if led_on: # calculate the difference between the light on reading and light off
     result = [0] * len(read)
     for i in range(len(read)):
-      result[i] = read[i] - offset[i]
+      result[i] = read[i] - offset[i] + 0.1 # Added 0.1 to avoid taking logarithm of 0 in case read and offset are equal
     return result
   else:
     return read

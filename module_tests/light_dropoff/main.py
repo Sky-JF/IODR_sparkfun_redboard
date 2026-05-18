@@ -6,6 +6,11 @@ import full_setting_test as fst
 from math import log10
 
 led = machine.Pin(17, machine.Pin.OUT) # LED connected to pin 17
+led_ON = 1
+led_OFF = 0
+as726x_integ_time = 35 # 100.8 ms
+LED_WINDUP_TIME = as726x_integ_time*2.8/1000
+LED_WINDDOWN_TIME = 6*LED_WINDUP_TIME
 
 warning_array_size = 300
 
@@ -33,17 +38,36 @@ def get_sensor_name(configs):
 Get a command from the user, validate it, and execute it
 """
 def start_OD_tests(configs):
+  sensors.veml.set_gain(0.125)
+  sensors.veml.set_integ_time(200.0)
+  sensors.as726x.set_gain(2)  # [1, 3.7, 16, 64]
+  sensors.as726x.set_integration_time(as726x_integ_time)
   while True:
-    command = get_command()
-
-    # Check if a blank value is set before computing optical density (od is dependent on blank)
-    if (command == "od" or command == "od5") and not configs["blank_set"]:
-      print("Error: blank value has not been set")
-      continue
-
-    execute_command(configs, command)
-    if len(configs["data"]) > warning_array_size:
-      print("Warning! Data collected in this run is over 300 data points. Another read may result in a crash. Consider saving or dropping the current data before proceeding.")
+    led.value(led_ON)
+    sleep(LED_WINDUP_TIME)
+    sensor = configs["sensor"]
+    if sensor == "temt6000":
+      read = [sensors.read_temt6000()]
+    elif sensor == "veml6030":
+      read = [sensors.read_veml6030()]
+    elif sensor == "as726x":
+      sensors.as726x.take_measurements()
+      read = [sensors.as726x.get_calibrated_violet(),
+          sensors.as726x.get_calibrated_blue(),
+          sensors.as726x.get_calibrated_green(),
+          sensors.as726x.get_calibrated_yellow(),
+          sensors.as726x.get_calibrated_orange(),
+          sensors.as726x.get_calibrated_red() 
+              ]
+    else:
+      raise ValueError("No sensor selected")
+    if sensor == "as726x":
+      print(f"Light in: {read[3]}   Integ time: {(as726x_integ_time+1)*2.8}") # yellow channel
+    else:    
+      for val in read:
+        print(f"Light in: {val}")
+    led.value(led_OFF)
+    sleep(LED_WINDDOWN_TIME)
 
 """
 Get input from user, validate it, and print a status message for each command
@@ -100,7 +124,7 @@ Use the given command to execute its instruction of data collection or configura
 """
 def execute_command(configs, command):
   if command == "blank":
-    configs["blank"] = sensors.read_light(configs, led)
+    configs["blank"] = read_light(configs)
     configs["blank_set"] = True
     as726x_warning() # remove this later once clarified
     j = 0
@@ -111,20 +135,18 @@ def execute_command(configs, command):
     print("Note: this value is different for different sensors since they read different measurements")
   elif command == "od":
     as726x_warning() # remove this later once clarified
-    light_in_readings = sensors.read_light(configs, led)
+    light_in_readings = read_light(configs)
     for i in range(len(light_in_readings)):
-      od = compute_od(light_in_readings[i], configs["blank"][i], configs)
-      print(f"{i}: OD: {od}\t\tblank: {configs["blank"][i]}\t\tlight in: {light_in_readings[i]}")
+      compute_od(light_in_readings[i], configs["blank"][i], configs)
   elif command == "od5":
     as726x_warning() # remove this later once clarified
     # Repeat 5 times
-    for i in range(5):
-      light_in_readings = sensors.read_light(configs, led)
+    for i in range (5):
+      light_in_readings = read_light(configs)
       for j in range(len(light_in_readings)):
         reading = light_in_readings[j]
         blank = configs["blank"][j]
-        od = compute_od(reading, blank, configs)
-        print(f"{i}: OD: {od}\t\tblank: {blank}\t\tlight in: {reading}")
+        compute_od(reading, blank, configs)
       print()
   elif command == "cs":
     get_sensor_name(configs)
@@ -132,7 +154,7 @@ def execute_command(configs, command):
   elif command == "read":
     as726x_warning() # remove this later once clarified
     j = 0
-    light_in_readings = sensors.read_light(configs, led)
+    light_in_readings = read_light(configs)
     for reading in light_in_readings:
       print(f"{j}: Sensor value: {reading}")
       configs["data"].append(reading) # Make file saving prettier %%%
@@ -141,7 +163,7 @@ def execute_command(configs, command):
     as726x_warning() # remove this later once clarified
     for i in range(5):
       j = 0
-      light_in_readings = sensors.read_light(configs, led)
+      light_in_readings = read_light(configs)
       for reading in light_in_readings:
         print(f"{j}: Sensor value: {reading}")
         configs["data"].append(reading) # Make file saving prettier %%%
@@ -150,7 +172,7 @@ def execute_command(configs, command):
   elif command == "read-off":
     as726x_warning() # remove this later once clarified
     j = 0
-    light_in_readings = sensors.read_light(configs, led, led_on=False)
+    light_in_readings = read_light(configs, led_on=False)
     for reading in light_in_readings:
       print(f"{j}: Sensor value: {reading}")
       configs["data"].append(reading) # Make file saving prettier %%%
@@ -159,7 +181,7 @@ def execute_command(configs, command):
     as726x_warning() # remove this later once clarified
     for i in range(5):
       j = 0
-      light_in_readings = sensors.read_light(configs, led, led_on=False)
+      light_in_readings = read_light(configs, led_on=False)
       for reading in light_in_readings:
         print(f"{j}: Sensor value: {reading}")
         configs["data"].append(reading) # Make file saving prettier %%%
@@ -180,7 +202,7 @@ def execute_command(configs, command):
 
 
 """
-Assign an index to each color of each reading by the as726x
+Assign a color to each reading by the as726x
 """
 def as726x_warning():
   if configs["sensor"] == "as726x":
@@ -198,18 +220,45 @@ use the light in and blank value to calculate absorbance/optical density
 def compute_od(light_in, blank_val, configs):
   if (light_in > 0 and blank_val > 0):
     od = log10(blank_val/light_in)
-    #print(f"OD: {od}\t\tblank: {blank_val}\t\tlight in: {light_in}")
+    print(f"OD: {od}\t\tblank: {blank_val}\t\tlight in: {light_in}")
     configs["data"].append(od) # Make file saving prettier %%%
-    return od
   elif light_in <= 0:
     print(f"Error: light in value of {light_in} is less than or equal to 0 (outside function domain)\nMake sure that the sensor is well connected and is not blocked")
   elif blank_val <= 0:
     print(f"Error: blank value of {blank_val} is less than or equal to 0 (outside function domain)\nMake sure that the sensor is well connected and is not blocked")
   else:
     print("Error: unknown")
-  return -1 # In case of error, invalid od value is returned
 
+"""
+Turn the LED on for 0.5 seconds, then read values from the selected sensor
+"""
+def read_light(configs, led_on=True):
+  sensor = configs["sensor"]
+  #read = 0
 
+  if (led_on):
+    led.value(led_ON) # turn led on
+  sleep(LED_WINDUP_TIME)
+
+  if sensor == "temt6000":
+    read = [sensors.read_temt6000()]
+  elif sensor == "veml6030":
+    read = [sensors.read_veml6030()]
+  elif sensor == "as726x":
+    sensors.as726x.take_measurements()
+    read = [sensors.as726x.get_calibrated_violet(),
+				sensors.as726x.get_calibrated_blue(),
+				sensors.as726x.get_calibrated_green(),
+				sensors.as726x.get_calibrated_yellow(),
+				sensors.as726x.get_calibrated_orange(),
+				sensors.as726x.get_calibrated_red() 
+            ]
+  else:
+    raise ValueError("No sensor selected")
+
+  led.value(led_OFF) #turn led off
+  sleep(LED_WINDUP_TIME)
+  return read
 
 """
 Save the data points collected in this session to a file

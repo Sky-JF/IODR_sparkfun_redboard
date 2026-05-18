@@ -1,13 +1,6 @@
 .vscode
 .venv
-backup
-blink
-i2c_test
-test_as726x
-test_veml6030
-notes.txt
 .firmware
-OD_tests/data.txt
-OD_tests/images
-light_dropoff/
+CLI_controller/data.txt
+CLI_controller/images
 *.csv
