@@ -1,27 +1,10 @@
 """
-main.py
--------
-Continuous optical density data collection loop.
-MicroPython port of the Arduino IODR project.
+main.py — MUX-enabled, 3-sensor parallel version.
 
-Architecture
-------------
-- Reads light sensors at a fast interval (OD_READ_INTERVAL_MS)
-- Averages readings over POINTS_TO_AVERAGE samples
-- Uploads averaged OD + temperature data to InfluxDB every UPLOAD_INTERVAL_MS
-
-Hardware assumptions
---------------------
-- LED controlled by a single transistor on pin 17 (shared across all tubes)
-- VEML6030 sensors wired to separate I2C buses, or a single sensor for testing
-- AS726x sensor on I2C bus 0 (SCL=22, SDA=21)
-- Temperature: onboard or external sensor (replace get_temperature() as needed)
-
-To add more tubes
------------------
-- VEML6030:  instantiate more QwiicVEML6030 objects and add them to VEML_SENSORS
-- AS726x:    instantiate more QwiicAS726x objects and add them to AS726X_SENSORS
-Tube numbers are 1-indexed in InfluxDB (matching Arduino convention).
+Uses a SparkFun Qwiic I2C MUX (TCA9548A) to address three sensors that share
+a single I2C bus. All LEDs are wired in parallel on pin 17, so one LED-on
+event illuminates every tube at once; we then quickly hop between MUX
+channels to read each sensor before turning the LED off again.
 """
 
 import machine
@@ -34,76 +17,115 @@ import wifi
 from influxdb_lib import InfluxDBClient
 from secrets import INFLUX_DB_API_TOKEN
 
+import qwiic_veml6030
+import qwiic_as726x
+import qwiic_tca9548a          # SparkFun Qwiic MUX driver
+
 # ---------------------------------------------------------------------------
-# Configuration
+# Config
 # ---------------------------------------------------------------------------
+DEVICE_ID           = 1
+UPLOAD_INTERVAL_MS  = 90_000
+OD_READ_INTERVAL_MS = 800
+POINTS_TO_AVERAGE   = 10
 
-DEVICE_ID           = 1          # IODR device number (written to every InfluxDB point)
-UPLOAD_INTERVAL_MS  = 90_000     # how often to push data to InfluxDB (90 s, matches Arduino)
-OD_READ_INTERVAL_MS = 800        # how often to take a light reading (matches Arduino)
-POINTS_TO_AVERAGE   = 10         # readings averaged before upload (matches Arduino)
+ACTIVE_SENSOR = "as726x"        # "veml6030" or "as726x"
 
-# Which sensor type is active: "veml6030" | "as726x"
-ACTIVE_SENSOR = "as726x"
+# Which MUX channels host the three sensors (one sensor per channel)
+MUX_CHANNELS = (1, 2, 3)
 
-# InfluxDB connection — edit to match your server
+# InfluxDB
 INFLUXDB_HOST   = "olsonlab-iodr.kiewit.dartmouth.edu"
 INFLUXDB_PORT   = 8086
 INFLUXDB_TOKEN  = INFLUX_DB_API_TOKEN
 INFLUXDB_ORG    = "olsonlab"
 INFLUXDB_BUCKET = "iodr_test"
 
+led_ON  = 1
+led_OFF = 0
+
 # ---------------------------------------------------------------------------
 # Hardware setup
 # ---------------------------------------------------------------------------
-
-# Shared LED transistor pin (controls all LEDs across all tubes)
-led = machine.Pin(17, machine.Pin.OUT)
-
-# Blank button — pin A5, active high (reads 1 when pressed)
-# Only checked when ACTIVE_SENSOR == "as726x"
-blank_button = machine.Pin(33, machine.Pin.IN, machine.Pin.PULL_UP)  # A5 on ESP32 is GPIO33
-
-# I2C bus for sensors
 i2c0 = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(21), freq=400_000)
+led  = machine.Pin(17, machine.Pin.OUT)        # shared LED transistor
+
+# Let SparkFun's qwiic_i2c layer create the wrapped driver — its chip
+# drivers expect writeCommand()/readBlock(), not raw machine.I2C methods.
+mux = qwiic_tca9548a.QwiicTCA9548A()
+if not mux.is_connected():
+    print("ERROR: Qwiic MUX not found at 0x70. Check wiring.")
+    sys.exit(1)
+print("Qwiic MUX detected.")
+
 
 # ---------------------------------------------------------------------------
-# Multi-tube sensor lists
+# MUX-aware sensor proxy
 # ---------------------------------------------------------------------------
-# Add one sensor object per test tube.
-# If you only have one sensor, leave a single-element list.
-# For multiple VEML6030s on different I2C buses, create separate I2C objects:
-#   i2c1 = machine.I2C(1, scl=machine.Pin(xx), sda=machine.Pin(yy), freq=400_000)
-#   veml2 = qwiic_veml6030.QwiicVEML6030(i2c=i2c1)
+# Wraps a sensor object so that every attribute access first enables the
+# correct MUX channel. This keeps sensors.py unchanged [4] — the wrapped
+# objects behave exactly like the underlying QwiicVEML6030 / QwiicAS726x.
+class MuxedSensor:
+    def __init__(self, mux, channel, sensor):
+        self._mux     = mux
+        self._channel = channel
+        self._sensor  = sensor
 
-import qwiic_veml6030
-import qwiic_as726x
+    def _select(self):
+        # Disable all channels then enable just this one — guarantees only
+        # one device is on the bus at a time.
+        self._mux.disable_all()
+        self._mux.enable_channels(self._channel)
 
-VEML_SENSORS   = [
-    qwiic_veml6030.QwiicVEML6030(),   # Tube 1
-    # qwiic_veml6030.QwiicVEML6030(i2c=i2c1),  # Tube 2 – add more buses as needed
-]
+    def __getattr__(self, name):
+        attr = getattr(self._sensor, name)
+        if callable(attr):
+            def wrapped(*args, **kwargs):
+                self._select()
+                return attr(*args, **kwargs)
+            return wrapped
+        # Non-callable attribute — still need the right channel selected
+        self._select()
+        return attr
 
-AS726X_SENSORS = [
-    qwiic_as726x.QwiicAS726x(i2c0),  # Tube 1
-    # qwiic_as726x.QwiicAS726x(i2c1),  # Tube 2
-]
 
-# configs dict mirrors the original main.py structure
-# wind_up_time / wind_down_time start at 0.5 s.
-# For the AS726x, setup() runs config_routine which overwrites these with
-# values derived from the ideal integration time found by binary search.
+# ---------------------------------------------------------------------------
+# Build sensor lists — one entry per MUX channel
+# ---------------------------------------------------------------------------
+def _make_veml_for_channel(ch):
+    mux.disable_all()
+    mux.enable_channels(ch)
+    return MuxedSensor(mux, ch, qwiic_veml6030.QwiicVEML6030())
+
+def _make_as726x_for_channel(ch):
+    mux.disable_all()
+    mux.enable_channels(ch)
+    return MuxedSensor(mux, ch, qwiic_as726x.QwiicAS726x())   # no i2c arg
+
+if ACTIVE_SENSOR == "veml6030":
+    VEML_SENSORS   = [_make_veml_for_channel(ch) for ch in MUX_CHANNELS]
+    AS726X_SENSORS = []
+else:
+    VEML_SENSORS   = []
+    AS726X_SENSORS = [_make_as726x_for_channel(ch) for ch in MUX_CHANNELS]
+
+
+# ---------------------------------------------------------------------------
+# Shared configs dict (used by sensors.py and config_routine.py) [1][2]
+# ---------------------------------------------------------------------------
 configs = {
     "sensor":         ACTIVE_SENSOR,
     "blank":          None,
     "blank_set":      False,
     "data":           [],
-    "wind_up_time":   0.5,   # updated by config_routine for AS726x
-    "wind_down_time": 0.5,   # updated by config_routine for AS726x
+    "wind_up_time":   0.5,
+    "wind_down_time": 0.5,
 }
 
+blank_values = [None] * len(MUX_CHANNELS)
+
 # ---------------------------------------------------------------------------
-# InfluxDB client
+# InfluxDB client [3]
 # ---------------------------------------------------------------------------
 db = InfluxDBClient(
     host   = INFLUXDB_HOST,
@@ -113,122 +135,99 @@ db = InfluxDBClient(
     bucket = INFLUXDB_BUCKET,
 )
 
-# ---------------------------------------------------------------------------
-# Blank values — one per tube (mirrors Arduino's blankValue[] array)
-# ---------------------------------------------------------------------------
-blank_values = [None] * max(len(VEML_SENSORS), len(AS726X_SENSORS), 1)
 
 # ---------------------------------------------------------------------------
-# Timing state (mirrors Arduino's millis() pattern)
+# Temperature helper (unchanged) [1]
 # ---------------------------------------------------------------------------
-last_od_read_time    = time.ticks_ms()
-last_upload_time     = time.ticks_ms()
-accumulated_readings = []   # list of per-cycle results, averaged before upload
-
-# ---------------------------------------------------------------------------
-# Temperature helper
-# ---------------------------------------------------------------------------
-
 def get_temperature():
-    """
-    Placeholder — replace with your actual temperature sensor code.
-    Returns None if no sensor is available.
-    """
-    # Example using a DS18x20 on a OneWire bus (install micropython-onewire):
-    # import onewire, ds18x20
-    # ow  = onewire.OneWire(machine.Pin(8))
-    # ds  = ds18x20.DS18X20(ow)
-    # roms = ds.scan()
-    # if roms:
-    #     ds.convert_temp()
-    #     time.sleep_ms(750)
-    #     return ds.read_temp(roms[0])
     return None
 
 
 # ---------------------------------------------------------------------------
-# Blank calibration
+# Fast multi-sensor read — single LED pulse, three reads
 # ---------------------------------------------------------------------------
-
-def set_blank():
+# Because the LEDs are wired in parallel, one LED-on event lights every tube
+# simultaneously. We read all three channels inside one wind_up / wind_down
+# window — the channel switch is microseconds compared to the millisecond-
+# scale integration time of the sensors.
+def _read_all_channels_one_shot():
     """
-    Measure blank values for all tubes using the active sensor type.
-    Called once before OD collection begins.
+    Performs one ambient + one signal read across all MUX channels using
+    a single shared LED pulse. Returns ambient-subtracted readings, one
+    per channel, in the same order as MUX_CHANNELS.
     """
-    global blank_values, configs
+    sensor_list = AS726X_SENSORS if ACTIVE_SENSOR == "as726x" else VEML_SENSORS
 
-    print("Setting blank values for sensor:", ACTIVE_SENSOR)
+    # --- ambient (LED off) ---
+    led.value(led_OFF)
+    time.sleep(configs["wind_up_time"])
+    ambient = []
+    for s in sensor_list:
+        if ACTIVE_SENSOR == "as726x":
+            s.take_measurements()
+            ambient.append(s.get_calibrated_orange())
+        else:
+            ambient.append(float(s.read_light()))
 
-    if ACTIVE_SENSOR == "veml6030":
-        light_in = sens.read_all_veml6030(
-            VEML_SENSORS, led, configs, POINTS_TO_AVERAGE
-        )
-        blank_values = light_in
-        configs["blank"]     = light_in
-        configs["blank_set"] = True
+    # --- signal (LED on) ---
+    led.value(led_ON)
+    time.sleep(configs["wind_up_time"])
+    signal = []
+    for s in sensor_list:
+        if ACTIVE_SENSOR == "as726x":
+            s.take_measurements()
+            signal.append(s.get_calibrated_orange())
+        else:
+            signal.append(float(s.read_light()))
 
-    elif ACTIVE_SENSOR == "as726x":
-        light_in = sens.read_all_as726x(
-            AS726X_SENSORS, led, configs, POINTS_TO_AVERAGE
-        )
-        blank_values = light_in
-        configs["blank"]     = light_in[0] if light_in else None
-        configs["blank_set"] = True
+    led.value(led_OFF)
+    time.sleep(configs["wind_down_time"])
 
-    print("Blank set:", blank_values)
+    # +0.1 to avoid log(0) downstream, matching sensors.py behaviour [4]
+    return [signal[i] - ambient[i] + 0.1 for i in range(len(sensor_list))]
+
+
+def read_light_all_tubes(points_to_average=POINTS_TO_AVERAGE):
+    """Average several one-shot reads across all 3 tubes."""
+    n = len(MUX_CHANNELS)
+    accum = [0.0] * n
+    for _ in range(points_to_average):
+        readings = _read_all_channels_one_shot()
+        for i in range(n):
+            accum[i] += readings[i]
+    return [v / points_to_average for v in accum]
 
 
 # ---------------------------------------------------------------------------
-# OD reading
+# OD calculation per tube [4]
 # ---------------------------------------------------------------------------
-
 def read_od_all_tubes():
-    """
-    Read all tubes for the active sensor type.
-
-    Returns
-    -------
-    list of (tube_number, od_float) — tube numbers are 1-indexed.
-    """
+    light_in = read_light_all_tubes(POINTS_TO_AVERAGE)
     results = []
-
-    if ACTIVE_SENSOR == "veml6030":
-        light_in = sens.read_all_veml6030(
-            VEML_SENSORS, led, configs, POINTS_TO_AVERAGE
-        )
-        for i, val in enumerate(light_in):
-            blank = blank_values[i] if i < len(blank_values) else 1.0
-            blank = blank if blank is not None else val
-            od    = sens.compute_od(val, blank)
-            results.append((i + 1, od))
-
-    elif ACTIVE_SENSOR == "as726x":
-        light_in = sens.read_all_as726x(
-            AS726X_SENSORS, led, configs, POINTS_TO_AVERAGE
-        )
-        for i, val in enumerate(light_in):
-            blank = blank_values[i] if i < len(blank_values) else 1.0
-            blank = blank if blank is not None else val
-            od    = sens.compute_od(val, blank)
-            results.append((i + 1, od))
-
+    for i, val in enumerate(light_in):
+        blank = blank_values[i] if blank_values[i] is not None else val
+        od    = sens.compute_od(val, blank)
+        results.append((i + 1, od))           # tube numbers are 1-indexed
     return results
 
 
 # ---------------------------------------------------------------------------
-# Upload
+# Blank
 # ---------------------------------------------------------------------------
+def set_blank():
+    global blank_values
+    print("Setting blank values for sensor:", ACTIVE_SENSOR)
+    blank_values = read_light_all_tubes(POINTS_TO_AVERAGE)
+    configs["blank"]     = blank_values
+    configs["blank_set"] = True
+    print("Blank set:", blank_values)
 
+
+# ---------------------------------------------------------------------------
+# InfluxDB upload [3]
+# ---------------------------------------------------------------------------
 def upload_to_influxdb(od_results):
-    """
-    Upload the averaged OD results and current temperature to InfluxDB.
-
-    Parameters
-    ----------
-    od_results : list – output of read_od_all_tubes(), always
-                 [(tube_number, od_float), ...] regardless of sensor type
-    """
-    wifi.reconnect_if_needed()   # guard against link loss between upload cycles
+    wifi.reconnect_if_needed()
     print("Uploading to InfluxDB...")
     db.write_od_data(DEVICE_ID, od_results)
 
@@ -240,141 +239,122 @@ def upload_to_influxdb(od_results):
         print("No temperature sensor found, skipping temperature upload.")
 
 
+def average_od_readings(reading_list):
+    if not reading_list:
+        return []
+    num_tubes = len(reading_list[0])
+    result = []
+    for t in range(num_tubes):
+        tube_num = reading_list[0][t][0]
+        valid    = [r[t][1] for r in reading_list if r[t][1] >= 0]
+        avg      = sum(valid) / len(valid) if valid else -1.0
+        result.append((tube_num, avg))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Timing state
+# ---------------------------------------------------------------------------
+last_od_read_time    = time.ticks_ms()
+last_upload_time     = time.ticks_ms()
+accumulated_readings = []
+
+blank_button = machine.Pin(33, machine.Pin.IN, machine.Pin.PULL_UP)
+
+
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
-
 def setup():
-    print("IODR MicroPython — starting up")
+    print("IODR MicroPython (MUX edition) — starting up")
     print("Active sensor:", ACTIVE_SENSOR)
     print("Device ID:", DEVICE_ID)
 
-    # Connect to WiFi before anything else — urequests needs an active link
     wifi.connect()
+
     if ACTIVE_SENSOR == "veml6030":
         for i, veml in enumerate(VEML_SENSORS):
-            ok = veml.begin()
-            if not ok:
-                print("VEML6030 tube {} not found. Check wiring.".format(i + 1))
+            if not veml.begin():
+                print("VEML6030 tube {} not found.".format(i + 1))
             else:
                 veml.set_gain(0.125)
                 veml.set_integ_time(100.0)
-                print("VEML6030 tube {} initialised.".format(i + 1))
+                print("VEML6030 tube {} on MUX ch {} initialised."
+                      .format(i + 1, MUX_CHANNELS[i]))
 
     elif ACTIVE_SENSOR == "as726x":
-        for i, sensor in enumerate(AS726X_SENSORS):
-            if not sensor.is_connected():
+        for i, s in enumerate(AS726X_SENSORS):
+            if not s.is_connected():
                 print("AS726x tube {} not connected.".format(i + 1))
-            elif not sensor.begin():
+            elif not s.begin():
                 print("AS726x tube {} failed to begin.".format(i + 1))
             else:
-                sensor.set_gain(2)
-                print("AS726x tube {} initialised.".format(i + 1))
+                s.set_gain(2)
+                print("AS726x tube {} on MUX ch {} initialised."
+                      .format(i + 1, MUX_CHANNELS[i]))
 
-        print("\nRunning AS726x integration-time calibration (orange channel)...")
-        config_routine.find_ideal_integration_time(configs, led)
+        # Run integration-time calibration on tube 1 only — the AS726x parts
+        # are identical, and configs["wind_up_time"] / wind_down_time are
+        # global, so calibrating once is sufficient [2].
+        # In setup(), AS726x branch:
+        print("\nCalibrating AS726x integration time across all 3 tubes...")
+        config_routine.find_ideal_integration_time_multi(
+            configs, led, AS726X_SENSORS
+        )
         print("Calibration complete. wind_up={:.4f}s  wind_down={:.4f}s".format(
-            configs["wind_up_time"], configs["wind_down_time"]
-        ))
+            configs["wind_up_time"], configs["wind_down_time"]))
 
-    # Set blank
-    print("\nSetting blank values — ensure cuvettes are filled with blank solution.")
+        # Propagate the chosen integration code to the other AS726x sensors
+        integ_code = None
+        try:
+            integ_code = sens.get_as726x()._integration_time  # best-effort
+        except Exception:
+            pass
+        if integ_code is not None:
+            for s in AS726X_SENSORS[1:]:
+                s.set_integration_time(integ_code)
+        print("Calibration complete. wind_up={:.4f}s  wind_down={:.4f}s".format(
+            configs["wind_up_time"], configs["wind_down_time"]))
+
+    print("\nSetting blank values — ensure tube holders contain blank solution.")
     set_blank()
     print("Blank set. Starting continuous data collection.\n")
 
 
 # ---------------------------------------------------------------------------
-# Main loop
+# Main loop [1]
 # ---------------------------------------------------------------------------
-
 def loop():
-    """
-    Continuous data collection loop — mirrors the Arduino loop() function.
-
-    Reads OD at OD_READ_INTERVAL_MS and uploads averaged data
-    to InfluxDB every UPLOAD_INTERVAL_MS.
-
-    For the AS726x only: if the blank button (pin A5) is held high,
-    re-runs set_blank() and clears the accumulated readings buffer so
-    the next upload only contains post-blank data.
-    """
     global last_od_read_time, last_upload_time, accumulated_readings
-
-    # --- Blank button check (AS726x only) ---
-    if ACTIVE_SENSOR == "as726x" and blank_button.value() == 0:
-        print("Blank button pressed — re-calibrating...")
-        # Integration time
-        print("\nRunning AS726x integration-time calibration (orange channel)...")
-        config_routine.find_ideal_integration_time(configs, led)
-        print("Calibration complete. wind_up={:.4f}s  wind_down={:.4f}s".format(
-            configs["wind_up_time"], configs["wind_down_time"]
-        ))
-
-        # Blank values
-        set_blank()
-        accumulated_readings = []  # discard readings taken before the new blank
-        print("Re-blank complete. Resuming data collection.")
-        # Wait for the button to be released before continuing
-        while blank_button.value() == 0 and False: # Currently disabled because of hardware issues with button
-            time.sleep_ms(50)
 
     # --- OD read cycle ---
     now = time.ticks_ms()
     if time.ticks_diff(now, last_od_read_time) >= OD_READ_INTERVAL_MS:
         od_results = read_od_all_tubes()
-
-        # Print current readings to REPL
         for tube_num, od_val in od_results:
             print("Tube {}: OD = {:.4f}".format(tube_num, od_val))
-
         accumulated_readings.append(od_results)
         last_od_read_time = time.ticks_ms()
 
     # --- Upload cycle ---
     if time.ticks_diff(time.ticks_ms(), last_upload_time) >= UPLOAD_INTERVAL_MS:
         if accumulated_readings:
-            # Average the OD readings collected since the last upload
             averaged = average_od_readings(accumulated_readings)
             upload_to_influxdb(averaged)
-            accumulated_readings = []   # clear the buffer
+            accumulated_readings = []
         last_upload_time = time.ticks_ms()
 
-    # Small sleep to avoid busy-waiting
+    # --- Blank button (AS726x only) ---
+    if ACTIVE_SENSOR == "as726x" and blank_button.value() == 0:
+        print("Blank button pressed — re-calibrating...")
+        set_blank()
+        accumulated_readings = []
+        print("Re-blank complete.")
+
     time.sleep_ms(50)
 
 
-def average_od_readings(reading_list):
-    """
-    Average a list of OD reading sets.
-
-    Parameters
-    ----------
-    reading_list : list of list – each inner list is one cycle's output of
-                   read_od_all_tubes(), i.e. [(tube_num, od_float), ...]
-
-    Returns
-    -------
-    list of (tube_num, averaged_od_float)
-    """
-    if not reading_list:
-        return []
-
-    num_tubes = len(reading_list[0])
-    result    = []
-
-    for t in range(num_tubes):
-        tube_num = reading_list[0][t][0]
-        valid    = [r[t][1] for r in reading_list if r[t][1] >= 0]
-        avg      = sum(valid) / len(valid) if valid else -1.0
-        result.append((tube_num, avg))
-
-    return result
-
-
 # ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     setup()
     try:
@@ -383,4 +363,5 @@ if __name__ == "__main__":
     except (KeyboardInterrupt, SystemExit):
         print("\nStopping data collection.")
         led.value(led_OFF)
+        mux.disable_all()
         sys.exit(0)

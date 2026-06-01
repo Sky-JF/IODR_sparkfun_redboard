@@ -278,7 +278,7 @@ def setup():
         ))
 
     # Set blank
-    print("\nSetting blank values — ensure cuvettes are filled with blank solution.")
+    print("\nSetting blank values — ensure tube holders are filled with blank solution.")
     set_blank()
     print("Blank set. Starting continuous data collection.\n")
 
