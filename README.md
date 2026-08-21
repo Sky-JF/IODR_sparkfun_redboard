@@ -27,6 +27,8 @@ This repository features three main programs for the development board:
 
 Additionally, several tests for different modules of each main program is included in `./module_tests`. To run these tests, simply upload the files and observe their serial output.
 
+The folder `./Physical_parts` contains the files used to 3D print the physical parts used in this project. 
+
 ## Setup
 Before uploading any programs to the Sparkfun development board, make sure the correct micropython firmware is uploaded first.
 1. Download the [SparkFun MicroPython Firmware Uploader](https://github.com/sparkfun/SparkFun_MicroPython_Firmware_Uploader) 
