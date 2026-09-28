@@ -70,7 +70,11 @@ This repository features two types of powershell scripts for Windows which are u
 
 ### Other useful dependencies
 - esptool 
-  Used for uploading firmware to esp32 boards
+  Used for uploading firmware to esp32 boards. To update the firmware in a (ESP32) board, download the firmware of the board being used [here](https://micropython.org/download/SPARKFUN_IOT_REDBOARD_ESP32/) and use the following commands (in windows):
+  ```
+    esptool --port <USB port address> erase-flash
+    esptool --port <USB port address> write-flash 0x1000 <path to binary file>
+  ```
 
 ## Hardware used in this project
 - SparkFun IoT Redboard Development Board

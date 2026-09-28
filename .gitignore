@@ -4,3 +4,5 @@
 CLI_controller/data.txt
 CLI_controller/images
 *.csv
+.notes
+*secrets.py
