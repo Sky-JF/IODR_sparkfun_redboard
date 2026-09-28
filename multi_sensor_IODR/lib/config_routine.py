@@ -20,6 +20,7 @@ using the same LED duty-cycle formula as the original config_routine.
 
 import time
 import sensors
+from main import np_led_value
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -222,6 +223,7 @@ def _read_max_orange_at_integ_time(configs, led, integ_code,
 
     # --- ambient (LED off) ---
     led.value(led_OFF)
+    np_led_value(led_OFF)
     time.sleep(configs["wind_up_time"])
     ambient = []
     for i, s in enumerate(sensor_list):
@@ -233,6 +235,7 @@ def _read_max_orange_at_integ_time(configs, led, integ_code,
 
     # --- signal (LED on) ---
     led.value(led_ON)
+    np_led_value(led_ON)
     time.sleep(configs["wind_up_time"])
     signal = []
     for i, s in enumerate(sensor_list):
@@ -243,6 +246,7 @@ def _read_max_orange_at_integ_time(configs, led, integ_code,
         signal.append(s.get_calibrated_orange())
 
     led.value(led_OFF)
+    np_led_value(led_OFF)
     time.sleep(configs["wind_down_time"])
 
     # Ambient-subtracted readings, same +0.1 guard as sensors.py

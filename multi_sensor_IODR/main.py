@@ -1,7 +1,7 @@
 """
 main.py — MUX-enabled, 3-sensor parallel version.
 
-Uses a SparkFun Qwiic I2C MUX (TCA9548A) to address three sensors that share
+Uses a SparkFun Qwiic I2C MUX (TCA9548A) to address all sensors that share
 a single I2C bus. All LEDs are wired in parallel on pin 17, so one LED-on
 event illuminates every tube at once; we then quickly hop between MUX
 channels to read each sensor before turning the LED off again.
@@ -10,6 +10,7 @@ channels to read each sensor before turning the LED off again.
 import machine
 import time
 import sys
+import neopixel as np
 
 import sensors as sens
 import config_routine
@@ -30,10 +31,17 @@ OD_READ_INTERVAL_MS = 800
 POINTS_TO_AVERAGE   = 10
 
 # Which MUX channels host the sensors (one sensor per channel)
-MUX_CHANNELS = (2, 1, 0) # 4, 5, 6, 7)
+MUX_CHANNELS = (2, 1) # 4, 5, 6, 7)
 
 # Which sensor corresponds to each MUX channel ("veml6030" or "as726x")
 ACTIVE_SENSOR = "as726x" #("as726x", "as726x", "as726x", "veml6030", "veml6030", "veml6030", "veml6030")
+
+#NeoPixel LED Setup
+NUM_NP_LEDS = 8
+NP_PIN = machine.Pin(4)
+np_led = np.NeoPixel(NP_PIN, NUM_NP_LEDS)
+# Which NeoPixel LEDs are being used [0-7]
+np_idx = (1, 2)
 
 # InfluxDB
 INFLUXDB_HOST   = "olsonlab-iodr.kiewit.dartmouth.edu"
@@ -49,7 +57,7 @@ led_OFF = 0
 # Hardware setup
 # ---------------------------------------------------------------------------
 i2c0 = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(21), freq=400_000)
-led  = machine.Pin(17, machine.Pin.OUT)        # shared LED transistor
+led  = machine.Pin(18, machine.Pin.OUT)        # builtin led
 
 # Let SparkFun's qwiic_i2c layer create the wrapped driver — its chip
 # drivers expect writeCommand()/readBlock(), not raw machine.I2C methods.
@@ -143,12 +151,20 @@ db = InfluxDBClient(
 def get_temperature():
     return None
 
+# ---------------------------------------------------------------------------
+# Turn all leds on or off
+# ---------------------------------------------------------------------------
+def np_led_value(LED_COMMAND):
+    for np_idx_num in np_idx:
+        # Max brightness or no brightness since LED_Command is either 1 or 0
+        np_led[np_idx_num] = (LED_COMMAND * 255, LED_COMMAND * 255, LED_COMMAND * 255)
+    np_led.write()
 
 # ---------------------------------------------------------------------------
-# Fast multi-sensor read — single LED pulse, three reads
+# Fast multi-sensor read — single LED pulse, multiple reads
 # ---------------------------------------------------------------------------
 # Because the LEDs are wired in parallel, one LED-on event lights every tube
-# simultaneously. We read all three channels inside one wind_up / wind_down
+# simultaneously. We read all channels inside one wind_up / wind_down
 # window — the channel switch is microseconds compared to the millisecond-
 # scale integration time of the sensors.
 def _read_all_channels_one_shot():
@@ -160,6 +176,7 @@ def _read_all_channels_one_shot():
     sensor_list = AS726X_SENSORS if ACTIVE_SENSOR == "as726x" else VEML_SENSORS
 
     # --- ambient (LED off) ---
+    np_led_value(led_OFF)
     led.value(led_OFF)
     time.sleep(configs["wind_up_time"])
     ambient = []
@@ -171,6 +188,7 @@ def _read_all_channels_one_shot():
             ambient.append(float(s.read_light()))
 
     # --- signal (LED on) ---
+    np_led_value(led_ON)
     led.value(led_ON)
     time.sleep(configs["wind_up_time"])
     signal = []
@@ -181,6 +199,7 @@ def _read_all_channels_one_shot():
         else:
             signal.append(float(s.read_light()))
 
+    np_led_value(led_OFF)
     led.value(led_OFF)
     time.sleep(configs["wind_down_time"])
 
@@ -189,7 +208,7 @@ def _read_all_channels_one_shot():
 
 
 def read_light_all_tubes(points_to_average=POINTS_TO_AVERAGE):
-    """Average several one-shot reads across all 3 tubes."""
+    """Average several one-shot reads across all tubes."""
     n = len(MUX_CHANNELS)
     accum = [0.0] * n
     for _ in range(points_to_average):
@@ -237,7 +256,8 @@ def upload_to_influxdb(od_results):
         db.write_temperature(DEVICE_ID, temp)
         print("Temperature uploaded: {:.2f} °C".format(temp))
     else:
-        print("No temperature sensor found, skipping temperature upload.")
+        pass
+        #print("No temperature sensor found, skipping temperature upload.")
 
 
 def average_od_readings(reading_list):
@@ -297,22 +317,13 @@ def setup():
         # Run integration-time calibration on all tubes — the AS726x parts
         # are identical, and configs["wind_up_time"] / wind_down_time are
         # global, so calibrating once is sufficient.
-        print("\nCalibrating AS726x integration time across all 3 tubes...")
+        print("\nCalibrating AS726x integration time across all tubes...")
         config_routine.find_ideal_integration_time_multi(
             configs, led, AS726X_SENSORS
         )
         print("Calibration complete. wind_up={:.4f}s  wind_down={:.4f}s".format(
             configs["wind_up_time"], configs["wind_down_time"]))
 
-        # Propagate the chosen integration code to the other AS726x sensors
-        integ_code = None
-        try:
-            integ_code = sens.get_as726x()._integration_time  # best-effort
-        except Exception:
-            pass
-        if integ_code is not None:
-            for s in AS726X_SENSORS[1:]:
-                s.set_integration_time(integ_code)
         print("Calibration complete. wind_up={:.4f}s  wind_down={:.4f}s".format(
             configs["wind_up_time"], configs["wind_down_time"]))
 
@@ -333,6 +344,7 @@ def loop():
         od_results = read_od_all_tubes()
         for tube_num, od_val in od_results:
             print("Tube {}: OD = {:.4f}".format(tube_num, od_val))
+        print()
         accumulated_readings.append(od_results)
         last_od_read_time = time.ticks_ms()
 
@@ -344,8 +356,8 @@ def loop():
             accumulated_readings = []
         last_upload_time = time.ticks_ms()
 
-    # --- Blank button (AS726x only) ---
-    if ACTIVE_SENSOR == "as726x" and blank_button.value() == 0:
+    # --- Blank button ---
+    if blank_button.value() == 0:
         print("Blank button pressed — re-calibrating...")
         set_blank()
         accumulated_readings = []
@@ -362,6 +374,7 @@ if __name__ == "__main__":
             loop()
     except (KeyboardInterrupt, SystemExit):
         print("\nStopping data collection.")
+        np_led_value(led_OFF)
         led.value(led_OFF)
         mux.disable_all()
         sys.exit(0)
