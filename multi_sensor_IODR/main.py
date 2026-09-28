@@ -29,10 +29,11 @@ UPLOAD_INTERVAL_MS  = 90_000
 OD_READ_INTERVAL_MS = 800
 POINTS_TO_AVERAGE   = 10
 
-ACTIVE_SENSOR = "as726x"        # "veml6030" or "as726x"
+# Which MUX channels host the sensors (one sensor per channel)
+MUX_CHANNELS = (2, 1, 0) # 4, 5, 6, 7)
 
-# Which MUX channels host the three sensors (one sensor per channel)
-MUX_CHANNELS = (1, 2, 3)
+# Which sensor corresponds to each MUX channel ("veml6030" or "as726x")
+ACTIVE_SENSOR = "as726x" #("as726x", "as726x", "as726x", "veml6030", "veml6030", "veml6030", "veml6030")
 
 # InfluxDB
 INFLUXDB_HOST   = "olsonlab-iodr.kiewit.dartmouth.edu"
@@ -293,10 +294,9 @@ def setup():
                 print("AS726x tube {} on MUX ch {} initialised."
                       .format(i + 1, MUX_CHANNELS[i]))
 
-        # Run integration-time calibration on tube 1 only — the AS726x parts
+        # Run integration-time calibration on all tubes — the AS726x parts
         # are identical, and configs["wind_up_time"] / wind_down_time are
-        # global, so calibrating once is sufficient [2].
-        # In setup(), AS726x branch:
+        # global, so calibrating once is sufficient.
         print("\nCalibrating AS726x integration time across all 3 tubes...")
         config_routine.find_ideal_integration_time_multi(
             configs, led, AS726X_SENSORS

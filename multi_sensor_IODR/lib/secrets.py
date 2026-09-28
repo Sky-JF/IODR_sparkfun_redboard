@@ -2,6 +2,7 @@
 secrets.py
 -------
 WiFi SSID and password
+InfluxDB API token
 Not uploaded to github
 """
 
