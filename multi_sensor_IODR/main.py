@@ -30,6 +30,7 @@ from manual_config import (
     DEVICE_ID, UPLOAD_INTERVAL_MS, OD_READ_INTERVAL_MS, POINTS_TO_AVERAGE,
     MUX_CHANNELS, ACTIVE_SENSOR,
     VEML6030_GAIN, VEML6030_INTEG_TIME_MS, AS726X_GAIN_CODE,
+    SEQUENTIAL_LEDS, 
     INFLUXDB_HOST, INFLUXDB_PORT, INFLUXDB_TOKEN, INFLUXDB_ORG, INFLUXDB_BUCKET,
     I2C_BUS_ID, I2C_SCL_PIN, I2C_SDA_PIN, I2C_FREQ_HZ,
     BLANK_BUTTON_PIN,
@@ -182,6 +183,11 @@ def _read_all_channels_one_shot():
 
 def read_light_all_tubes(points_to_average=POINTS_TO_AVERAGE):
     """Average several one-shot reads across all tubes."""
+    if SEQUENTIAL_LEDS:
+        sensor_list = AS726X_SENSORS if ACTIVE_SENSOR == "as726x" else VEML_SENSORS
+        return sens.read_all_sequential(sensor_list, ACTIVE_SENSOR, configs,
+                                        points_to_average)
+
     n = len(MUX_CHANNELS)
     accum = [0.0] * n
     for _ in range(points_to_average):

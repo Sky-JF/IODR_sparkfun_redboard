@@ -10,6 +10,9 @@ iterate over a list of sensors, one per test tube, mirroring the 8-tube
 loop in the Arduino IODR project.
 
 LED control is handled by led.py.
+
+Sequential functions (read_all_sequential_one_shot / read_all_sequential)
+light only one tube LED at a time, cycling through the tubes on every read.
 """
 
 import qwiic_veml6030
@@ -248,6 +251,97 @@ def read_all_as726x(as726x_list, configs, points_to_average=10):
 
     return [v / points_to_average for v in accum]
 
+# ---------------------------------------------------------------------------
+# Sequential (one LED at a time) multi-tube reads
+# ---------------------------------------------------------------------------
+# Only one tube LED is lit at any moment. Each read cycle walks through the
+# tubes in order (tube 1, tube 2, ...), starting again from tube 1 every time
+# a new read begins. A tube's LED is switched on only after the previous
+# tube's LED has been switched off AND wind_down_time has elapsed, so light
+# from a neighbouring tube cannot leak into the current measurement.
+#
+# Tube i is lit by led_ctrl.NP_IDX[i] and read by sensor_list[i]; keep NP_IDX
+# in manual_config.py in the same tube order as MUX_CHANNELS.
+
+def _read_single_sensor(sensor, sensor_name):  
+    """Internal helper: one reading from one (possibly MUX-proxied) sensor.
+
+    AS726x returns only the orange channel, matching _read_sensor().
+    """
+    if sensor_name == "as726x":
+        sensor.take_measurements()
+        return sensor.get_calibrated_orange()   # orange channel only
+    elif sensor_name == "veml6030":
+        return float(sensor.read_light())
+    else:
+        raise ValueError("Unknown sensor: " + sensor_name)
+
+
+def read_all_sequential_one_shot(sensor_list, sensor_name, configs):  
+    """
+    One ambient-subtracted reading per tube, lighting one tube LED at a time.
+
+    Parameters
+    ----------
+    sensor_list : list – one sensor object per tube (same order as NP_IDX)
+    sensor_name : str  – "as726x" or "veml6030"
+    configs     : dict – must contain "wind_up_time", "wind_down_time"
+
+    Returns
+    -------
+    list of float – ambient-subtracted readings, one per tube
+    """
+    num_tubes = len(sensor_list)
+    if num_tubes != len(led_ctrl.NP_IDX):
+        raise ValueError(
+            "Sequential read: {} sensors but {} tube LEDs (NP_IDX). "
+            "They must match one-to-one.".format(num_tubes,
+                                                  len(led_ctrl.NP_IDX)))
+
+    # Start of a new read: every LED off, let the sensors settle
+    led_ctrl.set_tube_leds(led_ctrl.LED_OFF)
+    led_ctrl.set_builtin_led(led_ctrl.LED_OFF)
+    sleep(configs["wind_up_time"])
+
+    result = [0.0] * num_tubes
+    for t, sensor in enumerate(sensor_list):
+        # --- all LEDs off: ambient for this tube ---
+        ambient = _read_single_sensor(sensor, sensor_name)
+
+        # --- only this tube's LED on: signal ---
+        led_ctrl.set_single_tube_led(t, led_ctrl.LED_ON)
+        led_ctrl.set_builtin_led(led_ctrl.LED_ON)
+        sleep(configs["wind_up_time"])
+        signal = _read_single_sensor(sensor, sensor_name)
+
+        # --- power down fully before the next tube's LED may turn on ---
+        led_ctrl.set_single_tube_led(t, led_ctrl.LED_OFF)
+        led_ctrl.set_builtin_led(led_ctrl.LED_OFF)
+        sleep(configs["wind_down_time"])
+
+        # +0.1 prevents log(0) if signal == ambient
+        result[t] = signal - ambient + 0.1
+
+    return result
+
+
+def read_all_sequential(sensor_list, sensor_name, configs,
+                        points_to_average=10):  
+    """
+    Average several sequential reads. Every read restarts the LED cycle at
+    tube 1.
+
+    Returns
+    -------
+    list of float – averaged, ambient-subtracted values, one per tube
+    """
+    accum = [0.0] * len(sensor_list)
+    for _ in range(points_to_average):
+        readings = read_all_sequential_one_shot(sensor_list, sensor_name,
+                                                configs)
+        for i in range(len(accum)):
+            accum[i] += readings[i]
+    return [v / points_to_average for v in accum]
 
 # ---------------------------------------------------------------------------
 # OD calculation
