@@ -27,7 +27,7 @@ POINTS_TO_AVERAGE   = 10
 MUX_CHANNELS = (4, 5, 6, 7) #(2, 1) 
 
 # Which sensor corresponds to each MUX channel ("veml6030" or "as726x")
-ACTIVE_SENSOR = "as726x" 
+ACTIVE_SENSOR = "veml6030" 
 
 # Sensor settings applied to every tube during main.setup()
 VEML6030_GAIN          = 0.125   # valid: 2, 1, 0.25, 0.125
