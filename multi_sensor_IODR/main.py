@@ -2,21 +2,20 @@
 main.py — MUX-enabled, 3-sensor parallel version.
 
 Uses a SparkFun Qwiic I2C MUX (TCA9548A) to address all sensors that share
-a single I2C bus. All LEDs are wired in parallel on pin 17, so one LED-on
-event illuminates every tube at once; we then quickly hop between MUX
-channels to read each sensor before turning the LED off again.
+a single I2C bus. All LEDs are wired in parallel, with their light up order
+determined by the functions in led_ctrl.py. MUX channels are quickly cycled
+to read each sensor before turning the LED off again.
 """
 
 import machine
 import time
 import sys
-import neopixel as np
 
 import sensors as sens
 import config_routine
 import wifi
+import led_ctrl          # NeoPixel / builtin LED setup 
 from influxdb_lib import InfluxDBClient
-from secrets import INFLUX_DB_API_TOKEN
 
 import qwiic_veml6030
 import qwiic_as726x
@@ -25,39 +24,22 @@ import qwiic_tca9548a          # SparkFun Qwiic MUX driver
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-DEVICE_ID           = 1
-UPLOAD_INTERVAL_MS  = 90_000
-OD_READ_INTERVAL_MS = 800
-POINTS_TO_AVERAGE   = 10
-
-# Which MUX channels host the sensors (one sensor per channel)
-MUX_CHANNELS = (2, 1) # 4, 5, 6, 7)
-
-# Which sensor corresponds to each MUX channel ("veml6030" or "as726x")
-ACTIVE_SENSOR = "as726x" #("as726x", "as726x", "as726x", "veml6030", "veml6030", "veml6030", "veml6030")
-
-#NeoPixel LED Setup
-NUM_NP_LEDS = 8
-NP_PIN = machine.Pin(4)
-np_led = np.NeoPixel(NP_PIN, NUM_NP_LEDS)
-# Which NeoPixel LEDs are being used [0-7]
-np_idx = (1, 2)
-
-# InfluxDB
-INFLUXDB_HOST   = "olsonlab-iodr.kiewit.dartmouth.edu"
-INFLUXDB_PORT   = 8086
-INFLUXDB_TOKEN  = INFLUX_DB_API_TOKEN
-INFLUXDB_ORG    = "olsonlab"
-INFLUXDB_BUCKET = "iodr_test"
-
-led_ON  = 1
-led_OFF = 0
+# All hardware/deployment constants (including the InfluxDB token from
+# secrets.py) now live in manual_config.py.
+from manual_config import (
+    DEVICE_ID, UPLOAD_INTERVAL_MS, OD_READ_INTERVAL_MS, POINTS_TO_AVERAGE,
+    MUX_CHANNELS, ACTIVE_SENSOR,
+    VEML6030_GAIN, VEML6030_INTEG_TIME_MS, AS726X_GAIN_CODE,
+    INFLUXDB_HOST, INFLUXDB_PORT, INFLUXDB_TOKEN, INFLUXDB_ORG, INFLUXDB_BUCKET,
+    I2C_BUS_ID, I2C_SCL_PIN, I2C_SDA_PIN, I2C_FREQ_HZ,
+    BLANK_BUTTON_PIN,
+)
 
 # ---------------------------------------------------------------------------
 # Hardware setup
 # ---------------------------------------------------------------------------
-i2c0 = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(21), freq=400_000)
-led  = machine.Pin(18, machine.Pin.OUT)        # builtin led
+i2c0 = machine.I2C(I2C_BUS_ID, scl=machine.Pin(I2C_SCL_PIN),
+                   sda=machine.Pin(I2C_SDA_PIN), freq=I2C_FREQ_HZ)  
 
 # Let SparkFun's qwiic_i2c layer create the wrapped driver — its chip
 # drivers expect writeCommand()/readBlock(), not raw machine.I2C methods.
@@ -152,15 +134,6 @@ def get_temperature():
     return None
 
 # ---------------------------------------------------------------------------
-# Turn all leds on or off
-# ---------------------------------------------------------------------------
-def np_led_value(LED_COMMAND):
-    for np_idx_num in np_idx:
-        # Max brightness or no brightness since LED_Command is either 1 or 0
-        np_led[np_idx_num] = (LED_COMMAND * 255, LED_COMMAND * 255, LED_COMMAND * 255)
-    np_led.write()
-
-# ---------------------------------------------------------------------------
 # Fast multi-sensor read — single LED pulse, multiple reads
 # ---------------------------------------------------------------------------
 # Because the LEDs are wired in parallel, one LED-on event lights every tube
@@ -176,8 +149,8 @@ def _read_all_channels_one_shot():
     sensor_list = AS726X_SENSORS if ACTIVE_SENSOR == "as726x" else VEML_SENSORS
 
     # --- ambient (LED off) ---
-    np_led_value(led_OFF)
-    led.value(led_OFF)
+    led_ctrl.set_tube_leds(led_ctrl.LED_OFF)    
+    led_ctrl.set_builtin_led(led_ctrl.LED_OFF)  
     time.sleep(configs["wind_up_time"])
     ambient = []
     for s in sensor_list:
@@ -188,8 +161,8 @@ def _read_all_channels_one_shot():
             ambient.append(float(s.read_light()))
 
     # --- signal (LED on) ---
-    np_led_value(led_ON)
-    led.value(led_ON)
+    led_ctrl.set_tube_leds(led_ctrl.LED_ON)    
+    led_ctrl.set_builtin_led(led_ctrl.LED_ON)  
     time.sleep(configs["wind_up_time"])
     signal = []
     for s in sensor_list:
@@ -199,8 +172,8 @@ def _read_all_channels_one_shot():
         else:
             signal.append(float(s.read_light()))
 
-    np_led_value(led_OFF)
-    led.value(led_OFF)
+    led_ctrl.set_tube_leds(led_ctrl.LED_OFF)    
+    led_ctrl.set_builtin_led(led_ctrl.LED_OFF)  
     time.sleep(configs["wind_down_time"])
 
     # +0.1 to avoid log(0) downstream, matching sensors.py behaviour [4]
@@ -280,7 +253,7 @@ last_od_read_time    = time.ticks_ms()
 last_upload_time     = time.ticks_ms()
 accumulated_readings = []
 
-blank_button = machine.Pin(33, machine.Pin.IN, machine.Pin.PULL_UP)
+blank_button = machine.Pin(BLANK_BUTTON_PIN, machine.Pin.IN, machine.Pin.PULL_UP)  
 
 
 # ---------------------------------------------------------------------------
@@ -298,8 +271,8 @@ def setup():
             if not veml.begin():
                 print("VEML6030 tube {} not found.".format(i + 1))
             else:
-                veml.set_gain(0.125)
-                veml.set_integ_time(100.0)
+                veml.set_gain(VEML6030_GAIN)                  
+                veml.set_integ_time(VEML6030_INTEG_TIME_MS)   
                 print("VEML6030 tube {} on MUX ch {} initialised."
                       .format(i + 1, MUX_CHANNELS[i]))
 
@@ -310,7 +283,7 @@ def setup():
             elif not s.begin():
                 print("AS726x tube {} failed to begin.".format(i + 1))
             else:
-                s.set_gain(2)
+                s.set_gain(AS726X_GAIN_CODE)   
                 print("AS726x tube {} on MUX ch {} initialised."
                       .format(i + 1, MUX_CHANNELS[i]))
 
@@ -319,8 +292,8 @@ def setup():
         # global, so calibrating once is sufficient.
         print("\nCalibrating AS726x integration time across all tubes...")
         config_routine.find_ideal_integration_time_multi(
-            configs, led, AS726X_SENSORS
-        )
+            configs, AS726X_SENSORS
+        ) 
         print("Calibration complete. wind_up={:.4f}s  wind_down={:.4f}s".format(
             configs["wind_up_time"], configs["wind_down_time"]))
 
@@ -374,7 +347,7 @@ if __name__ == "__main__":
             loop()
     except (KeyboardInterrupt, SystemExit):
         print("\nStopping data collection.")
-        np_led_value(led_OFF)
-        led.value(led_OFF)
+        led_ctrl.set_tube_leds(led_ctrl.LED_OFF)    
+        led_ctrl.set_builtin_led(led_ctrl.LED_OFF)  
         mux.disable_all()
         sys.exit(0)

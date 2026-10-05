@@ -5,10 +5,10 @@ Finds the ideal integration time for the AS726x sensor using binary search
 on the orange channel (~610 nm).
 
 Two modes:
-  * find_ideal_integration_time(configs, led)
+  * find_ideal_integration_time(configs)
       Single-sensor calibration (original behaviour).
 
-  * find_ideal_integration_time_multi(configs, led, sensor_list, mux, channels)
+  * find_ideal_integration_time_multi(configs, sensor_list, mux, channels)
       Multi-sensor calibration via an I2C MUX. Picks the integration time
       such that the BRIGHTEST sensor just reaches the saturation threshold,
       then backs off by PERCENTAGE_REDUCTION so no tube ever saturates.
@@ -16,11 +16,13 @@ Two modes:
 
 Both modes update configs["wind_up_time"] and configs["wind_down_time"]
 using the same LED duty-cycle formula as the original config_routine.
+
+LED control is handled by led.py.
 """
 
 import time
 import sensors
-from main import np_led_value
+import led_ctrl  
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -40,7 +42,7 @@ MAX_INTEG_CODE = 255
 # ---------------------------------------------------------------------------
 # Public entry point: single-sensor (unchanged)
 # ---------------------------------------------------------------------------
-def find_ideal_integration_time(configs, led):
+def find_ideal_integration_time(configs):  
     """Original single-sensor calibration. See module docstring."""
     if configs.get("sensor") != "as726x":
         print("config_routine: sensor is not as726x, skipping.")
@@ -49,7 +51,7 @@ def find_ideal_integration_time(configs, led):
     print("config_routine: searching for ideal AS726x integration time "
           "(single sensor, orange channel)...")
 
-    ideal_code = _binary_search_saturation_single(configs, led)
+    ideal_code = _binary_search_saturation_single(configs)  
     ideal_code = max(1, int(ideal_code * PERCENTAGE_REDUCTION))
 
     _apply_integration_code(configs, ideal_code, sensors_to_update=None)
@@ -58,8 +60,8 @@ def find_ideal_integration_time(configs, led):
 # ---------------------------------------------------------------------------
 # Public entry point: multi-sensor via MUX
 # ---------------------------------------------------------------------------
-def find_ideal_integration_time_multi(configs, led, sensor_list,
-                                      mux=None, channels=None):
+def find_ideal_integration_time_multi(configs, sensor_list,
+                                      mux=None, channels=None):  
     """
     Calibrate integration time so that the BRIGHTEST sensor in sensor_list
     just reaches the saturation threshold. The result is then reduced by
@@ -69,7 +71,6 @@ def find_ideal_integration_time_multi(configs, led, sensor_list,
     Parameters
     ----------
     configs     : dict        - shared configs dict; modified in-place
-    led         : machine.Pin - shared LED pin (parallel-wired across tubes)
     sensor_list : list        - list of AS726x sensor objects (one per tube).
                                 These can be raw QwiicAS726x instances or
                                 MuxedSensor proxies; if they're MuxedSensor
@@ -78,6 +79,8 @@ def find_ideal_integration_time_multi(configs, led, sensor_list,
                                 sensors aren't already MUX-aware proxies.
     channels    : optional    - iterable of MUX channels matching sensor_list,
                                 used only if mux is provided.
+
+    LEDs (parallel-wired across tubes) are controlled through led.py.
     """
     if configs.get("sensor") != "as726x":
         print("config_routine: sensor is not as726x, skipping.")
@@ -92,8 +95,8 @@ def find_ideal_integration_time_multi(configs, led, sensor_list,
               len(sensor_list)))
 
     ideal_code = _binary_search_saturation_multi(
-        configs, led, sensor_list, mux, channels
-    )
+        configs, sensor_list, mux, channels
+    )  
     ideal_code = max(1, int(ideal_code * PERCENTAGE_REDUCTION))
 
     _apply_integration_code(configs, ideal_code,
@@ -132,18 +135,18 @@ def _apply_integration_code(configs, ideal_code, sensors_to_update):
 # ---------------------------------------------------------------------------
 # Binary search: single sensor (original logic)
 # ---------------------------------------------------------------------------
-def _binary_search_saturation_single(configs, led):
+def _binary_search_saturation_single(configs): 
     left, right = MIN_INTEG_CODE, MAX_INTEG_CODE
 
     while left < right:
         mid  = (left + right) // 2
-        read = _read_orange_at_integ_time_single(configs, led, mid)
+        read = _read_orange_at_integ_time_single(configs, mid)  
         if read >= ORANGE_SATURATION_VALUE:
             right = mid
         else:
             left = mid + 1
 
-    final_read = _read_orange_at_integ_time_single(configs, led, left)
+    final_read = _read_orange_at_integ_time_single(configs, left)  
     if final_read < ORANGE_SATURATION_VALUE:
         print("config_routine: WARNING -- orange channel never saturated. "
               "Using max integration time code ({}).".format(MAX_INTEG_CODE))
@@ -151,14 +154,14 @@ def _binary_search_saturation_single(configs, led):
     return left
 
 
-def _read_orange_at_integ_time_single(configs, led, integ_code):
+def _read_orange_at_integ_time_single(configs, integ_code): 
     integ_time_s = (integ_code + 1) * 2.8 / 1000.0
     configs["wind_up_time"]   = max(integ_time_s, integ_time_s / 10.0)
     configs["wind_down_time"] = integ_time_s * 3.3
 
     sensors.get_as726x().set_integration_time(integ_code)
 
-    read_list  = sensors.read_light(configs, led)   # [orange_value]
+    read_list  = sensors.read_light(configs)   # [orange_value]  
     orange_val = read_list[0]
 
     print("  integ_code={:3d}  orange={:.1f}".format(integ_code, orange_val))
@@ -168,7 +171,7 @@ def _read_orange_at_integ_time_single(configs, led, integ_code):
 # ---------------------------------------------------------------------------
 # Binary search: multi-sensor (brightest wins -- no tube saturates)
 # ---------------------------------------------------------------------------
-def _binary_search_saturation_multi(configs, led, sensor_list, mux, channels):
+def _binary_search_saturation_multi(configs, sensor_list, mux, channels):  
     """
     Binary search using the MAX orange reading across all sensors as the
     decision variable. Tracks the best (smallest) integration code that
@@ -181,8 +184,8 @@ def _binary_search_saturation_multi(configs, led, sensor_list, mux, channels):
     while left < right:
         mid        = (left + right) // 2
         max_orange = _read_max_orange_at_integ_time(
-            configs, led, mid, sensor_list, mux, channels
-        )
+            configs, mid, sensor_list, mux, channels
+        )  
         if max_orange >= ORANGE_SATURATION_VALUE:
             if best_saturating_code is None or mid < best_saturating_code:
                 best_saturating_code = mid
@@ -203,8 +206,8 @@ def _binary_search_saturation_multi(configs, led, sensor_list, mux, channels):
     return best_saturating_code
 
 
-def _read_max_orange_at_integ_time(configs, led, integ_code,
-                                   sensor_list, mux, channels):
+def _read_max_orange_at_integ_time(configs, integ_code,
+                                   sensor_list, mux, channels):  
     """
     Set integration time on every sensor, take one LED-on/LED-off pulse,
     return the MAXIMUM orange-channel reading observed across the list.
@@ -219,11 +222,9 @@ def _read_max_orange_at_integ_time(configs, led, integ_code,
     for s in sensor_list:
         s.set_integration_time(integ_code)
 
-    led_ON, led_OFF = 1, 0
-
     # --- ambient (LED off) ---
-    led.value(led_OFF)
-    np_led_value(led_OFF)
+    led_ctrl.set_builtin_led(led_ctrl.LED_OFF)  
+    led_ctrl.set_tube_leds(led_ctrl.LED_OFF)    
     time.sleep(configs["wind_up_time"])
     ambient = []
     for i, s in enumerate(sensor_list):
@@ -234,8 +235,8 @@ def _read_max_orange_at_integ_time(configs, led, integ_code,
         ambient.append(s.get_calibrated_orange())
 
     # --- signal (LED on) ---
-    led.value(led_ON)
-    np_led_value(led_ON)
+    led_ctrl.set_builtin_led(led_ctrl.LED_ON)  
+    led_ctrl.set_tube_leds(led_ctrl.LED_ON)    
     time.sleep(configs["wind_up_time"])
     signal = []
     for i, s in enumerate(sensor_list):
@@ -245,8 +246,8 @@ def _read_max_orange_at_integ_time(configs, led, integ_code,
         s.take_measurements()
         signal.append(s.get_calibrated_orange())
 
-    led.value(led_OFF)
-    np_led_value(led_OFF)
+    led_ctrl.set_builtin_led(led_ctrl.LED_OFF)  
+    led_ctrl.set_tube_leds(led_ctrl.LED_OFF)    
     time.sleep(configs["wind_down_time"])
 
     # Ambient-subtracted readings, same +0.1 guard as sensors.py

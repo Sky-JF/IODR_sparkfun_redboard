@@ -8,6 +8,8 @@ Single-sensor read functions are used by config_routine and interactive
 testing. Multi-sensor functions (read_all_veml6030 / read_all_as726x)
 iterate over a list of sensors, one per test tube, mirroring the 8-tube
 loop in the Arduino IODR project.
+
+LED control is handled by led.py.
 """
 
 import qwiic_veml6030
@@ -15,9 +17,9 @@ import qwiic_as726x
 import machine
 import sys
 from time import sleep
-
-led_ON  = 1
-led_OFF = 0
+import led_ctrl  
+from manual_config import (I2C_BUS_ID, I2C_SCL_PIN, I2C_SDA_PIN,
+                           I2C_FREQ_HZ) 
 
 # ---------------------------------------------------------------------------
 # Default single-sensor objects (same as original)
@@ -38,7 +40,8 @@ def get_as726x(i2c=None):
     global _as726x
     if _as726x is None:
         if i2c is None:
-            i2c = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(21), freq=400_000)
+            i2c = machine.I2C(I2C_BUS_ID, scl=machine.Pin(I2C_SCL_PIN),
+                              sda=machine.Pin(I2C_SDA_PIN), freq=I2C_FREQ_HZ)  
         _as726x = qwiic_as726x.QwiicAS726x(i2c)
     return _as726x
 
@@ -80,7 +83,7 @@ def read_veml6030():
 # Core read_light helper 
 # ---------------------------------------------------------------------------
 
-def read_light(configs, led, led_on=True):
+def read_light(configs, led_on=True):  
     """
     Turn the LED on/off, wait for the sensor to stabilise, then read.
     Subtracts ambient (LED-off) reading from LED-on reading.
@@ -88,7 +91,6 @@ def read_light(configs, led, led_on=True):
     Parameters
     ----------
     configs : dict – must contain "sensor", "wind_up_time", "wind_down_time"
-    led     : machine.Pin – LED pin object
     led_on  : bool – True = LED-on measurement (ambient subtracted)
                      False = raw LED-off measurement
 
@@ -99,12 +101,14 @@ def read_light(configs, led, led_on=True):
     offset = []
     if led_on:
         offset = _read_sensor(sensor)   # ambient (LED off) reading
-        led.value(led_ON)
+        led_ctrl.set_builtin_led(led_ctrl.LED_ON)  
+        led_ctrl.set_tube_leds(led_ctrl.LED_ON)    
     sleep(configs["wind_up_time"])
 
     read = _read_sensor(sensor)
 
-    led.value(led_OFF)
+    led_ctrl.set_builtin_led(led_ctrl.LED_OFF)  
+    led_ctrl.set_tube_leds(led_ctrl.LED_OFF)    
     sleep(configs["wind_down_time"])
 
     if led_on:
@@ -138,7 +142,7 @@ def _read_sensor(sensor_name):
 # Multi-sensor / multi-tube iteration
 # ---------------------------------------------------------------------------
 
-def read_all_veml6030(veml_list, led_pins, configs, points_to_average=10):
+def read_all_veml6030(veml_list, configs, points_to_average=10): 
     """
     Iterate over a list of VEML6030 sensor objects, one per test tube.
     Mirrors the 8-tube loop in the Arduino readLightSensors() function.
@@ -146,28 +150,24 @@ def read_all_veml6030(veml_list, led_pins, configs, points_to_average=10):
     Parameters
     ----------
     veml_list        : list[QwiicVEML6030] – one sensor object per tube
-    led_pins         : list[machine.Pin]   – one LED Pin per tube
-                       (or a single shared Pin if all LEDs are on one transistor)
     configs          : dict – must contain "wind_up_time", "wind_down_time"
     points_to_average: int  – number of readings to average (like Arduino's
                               pointsToAverage = 10)
+
+    LEDs (tube LEDs + built-in LED) are controlled through led.py.
 
     Returns
     -------
     list of float – averaged, ambient-subtracted light-in values, one per tube
     """
     num_tubes  = len(veml_list)
-    shared_led = not isinstance(led_pins, (list, tuple))  # single LED pin for all tubes
 
     light_in = [0.0] * num_tubes
 
     for _ in range(points_to_average):
         # --- LED off: measure ambient ---
-        if shared_led:
-            led_pins.value(led_OFF)
-        else:
-            for pin in led_pins:
-                pin.value(led_OFF)
+        led_ctrl.set_builtin_led(led_ctrl.LED_OFF)  
+        led_ctrl.set_tube_leds(led_ctrl.LED_OFF)    
         sleep(configs["wind_up_time"])
 
         ambient = []
@@ -175,11 +175,8 @@ def read_all_veml6030(veml_list, led_pins, configs, points_to_average=10):
             ambient.append(float(veml.read_light()))
 
         # --- LED on: measure signal ---
-        if shared_led:
-            led_pins.value(led_ON)
-        else:
-            for pin in led_pins:
-                pin.value(led_ON)
+        led_ctrl.set_builtin_led(led_ctrl.LED_ON)  
+        led_ctrl.set_tube_leds(led_ctrl.LED_ON)    
         sleep(configs["wind_up_time"])
 
         signal = []
@@ -191,17 +188,14 @@ def read_all_veml6030(veml_list, led_pins, configs, points_to_average=10):
             light_in[i] += (signal[i] - ambient[i] + 0.1)
 
     # Turn LED(s) off when done
-    if shared_led:
-        led_pins.value(led_OFF)
-    else:
-        for pin in led_pins:
-            pin.value(led_OFF)
+    led_ctrl.set_builtin_led(led_ctrl.LED_OFF)  
+    led_ctrl.set_tube_leds(led_ctrl.LED_OFF)    
 
     # Divide by points_to_average
     return [v / points_to_average for v in light_in]
 
 
-def read_all_as726x(as726x_list, led_pins, configs, points_to_average=10):
+def read_all_as726x(as726x_list, configs, points_to_average=10):  
     """
     Iterate over a list of AS726x sensor objects, one per test tube.
     Returns per-tube orange-channel light-in values (ambient subtracted).
@@ -213,9 +207,10 @@ def read_all_as726x(as726x_list, led_pins, configs, points_to_average=10):
     Parameters
     ----------
     as726x_list      : list[QwiicAS726x] – one sensor object per tube
-    led_pins         : list[machine.Pin] or machine.Pin – LED pin(s)
     configs          : dict – must contain "wind_up_time", "wind_down_time"
     points_to_average: int  – number of readings to average
+
+    LEDs (tube LEDs + built-in LED) are controlled through led.py.
 
     Returns
     -------
@@ -223,17 +218,13 @@ def read_all_as726x(as726x_list, led_pins, configs, points_to_average=10):
                     one per tube
     """
     num_tubes  = len(as726x_list)
-    shared_led = not isinstance(led_pins, (list, tuple))
 
     accum = [0.0] * num_tubes
 
     for _ in range(points_to_average):
         # --- LED off: ambient ---
-        if shared_led:
-            led_pins.value(led_OFF)
-        else:
-            for pin in led_pins:
-                pin.value(led_OFF)
+        led_ctrl.set_builtin_led(led_ctrl.LED_OFF)  
+        led_ctrl.set_tube_leds(led_ctrl.LED_OFF)    
         sleep(configs["wind_up_time"])
 
         ambient = []
@@ -242,11 +233,8 @@ def read_all_as726x(as726x_list, led_pins, configs, points_to_average=10):
             ambient.append(sensor.get_calibrated_orange())
 
         # --- LED on: signal ---
-        if shared_led:
-            led_pins.value(led_ON)
-        else:
-            for pin in led_pins:
-                pin.value(led_ON)
+        led_ctrl.set_builtin_led(led_ctrl.LED_ON)  
+        led_ctrl.set_tube_leds(led_ctrl.LED_ON)    
         sleep(configs["wind_up_time"])
 
         for t, sensor in enumerate(as726x_list):
@@ -255,11 +243,8 @@ def read_all_as726x(as726x_list, led_pins, configs, points_to_average=10):
             accum[t]  += (signal_val - ambient[t] + 0.1) # Added 0.1 to avoid taking logarithm of 0 in case read and offset are equal
 
     # Turn LED(s) off
-    if shared_led:
-        led_pins.value(led_OFF)
-    else:
-        for pin in led_pins:
-            pin.value(led_OFF)
+    led_ctrl.set_builtin_led(led_ctrl.LED_OFF)  
+    led_ctrl.set_tube_leds(led_ctrl.LED_OFF)    
 
     return [v / points_to_average for v in accum]
 
