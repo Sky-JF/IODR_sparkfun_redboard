@@ -8,7 +8,7 @@ This project also features other programs that can be used to test the accuracy 
 
 ## Navigation
 This repository features three main programs for the development board:
-- `./CLI_controller`
+- `./CLI_controller/`
 
   This program provides a CLI to manually control the IODR. The controller allows for selection and configuration of different sensors (veml6030, temt6000, as726x), measuring of optical density or sensor light values, automatic data collection of all sensor configurations, as well as saving data to download onto a computer. 
   This program contains 2 scripts to download data collected while using the CLI:
@@ -18,12 +18,14 @@ This repository features three main programs for the development board:
   - `retreive_full_settings_test.ps1`
 
     Retreives data collected from the test for all settings for both the veml6030 and the as726x sensors
-- `./single_sensor_IODR`
+- `./single_sensor_IODR/`
 
   This program functions like the Arduino Giga IODR, collecting data and sending it to the database, but with only one sensor. 
-- `./multi_sensor_IODR`
+- `./multi_sensor_IODR/`
 
   This program implements reading of multiple sensors, similar to the Arduino Giga IODR.
+
+Note: `./singe_sensor_IODR/` and `./multi_sensor_IODR/` both contain a file `secrets.py` which should be included in the `./lib` folder and which should contain sensitive information that is uploaded to the board. To create one of these files locally, use the `secrets_template.py`, fill in its variables, and rename it to `secrets.py`. 
 
 Additionally, several tests for different modules of each main program is included in `./module_tests`. To run these tests, simply upload the files and observe their serial output.
 
