@@ -24,7 +24,7 @@ POINTS_TO_AVERAGE   = 10
 # ---------------------------------------------------------------------------
 # Which MUX channels host the sensors (one sensor per channel)
 # Also, remember to select the correct NeoPixel LEDs below
-MUX_CHANNELS = (2, 1) #(4, 5, 6, 7) 
+MUX_CHANNELS = (4, 5, 6, 7) #(2, 1) 
 
 # Which sensor corresponds to each MUX channel ("veml6030" or "as726x")
 ACTIVE_SENSOR = "as726x" 
@@ -73,6 +73,6 @@ BLANK_BUTTON_PIN = 33   # active-low, internal pull-up
 NUM_NP_LEDS = 8
 NP_PIN_NUM  = 4
 # Which NeoPixel LEDs are being used [0-7] (e.g. `(4, 5, 6, 7)`)
-NP_IDX = (1, 2) #(4, 5, 6, 7)
+NP_IDX = (4, 5, 6, 7) #(1, 2) 
 
 BUILTIN_LED_PIN_NUM = 18
