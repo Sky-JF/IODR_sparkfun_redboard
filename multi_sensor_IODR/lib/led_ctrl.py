@@ -16,6 +16,7 @@ colour intensities are defined in this file.
 Usage:
     import led as led_ctrl
     led_ctrl.set_tube_leds(led_ctrl.LED_ON)
+    led_ctrl.set_single_tube_led(0, led_ctrl.LED_ON)   # only tube 1 lit
     led_ctrl.set_builtin_led(led_ctrl.LED_OFF)
 """
 
@@ -23,7 +24,7 @@ import machine
 import neopixel
 
 from manual_config import (NUM_NP_LEDS, NP_PIN_NUM, NP_IDX,
-                           BUILTIN_LED_PIN_NUM) 
+                           BUILTIN_LED_PIN_NUM)  
 
 # ---------------------------------------------------------------------------
 # On / off commands
@@ -31,12 +32,8 @@ from manual_config import (NUM_NP_LEDS, NP_PIN_NUM, NP_IDX,
 LED_ON  = 1
 LED_OFF = 0
 
-# ---------------------------------------------------------------------------
-# Tube LED configuration
-# ---------------------------------------------------------------------------
-
 # Colour intensities (R, G, B), each 0-255, applied to every tube LED when ON.
-# (255, 0, 0) = max brightness red, matching the ideal wavelengths for the as726x.
+# (255, 0, 0) = max brightness red, matching the ideal wavelengths for the as726x..
 TUBE_LED_COLOR     = (255, 0, 0)
 TUBE_LED_OFF_COLOR = (0, 0, 0)
 
@@ -60,6 +57,23 @@ def set_tube_leds(state):
     color = TUBE_LED_COLOR if state else TUBE_LED_OFF_COLOR
     for np_idx_num in NP_IDX:
         _np_led[np_idx_num] = color
+    _np_led.write()
+
+
+def set_single_tube_led(tube_index, state):  
+    """
+    Turn on the LED of a single tube; every other tube LED is forced off,
+    so at most one tube LED can ever be lit by this call.
+
+    tube_index : int    - 0-based position in NP_IDX (tube 1 -> 0)
+    state      : truthy -> only that tube's LED on
+                 falsy  -> all tube LEDs off
+    """
+    for i, np_idx_num in enumerate(NP_IDX):
+        if state and i == tube_index:
+            _np_led[np_idx_num] = TUBE_LED_COLOR
+        else:
+            _np_led[np_idx_num] = TUBE_LED_OFF_COLOR
     _np_led.write()
 
 

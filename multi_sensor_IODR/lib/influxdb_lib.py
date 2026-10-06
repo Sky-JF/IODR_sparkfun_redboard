@@ -21,11 +21,11 @@ class InfluxDBClient:
 
     Parameters
     ----------
-    host   : str  – IP address or hostname of the InfluxDB server
-    port   : int  – HTTP port (default 8086)
-    token  : str  – InfluxDB API token
-    org    : str  – InfluxDB organisation name
-    bucket : str  – InfluxDB bucket name
+    host   : str   IP address or hostname of the InfluxDB server
+    port   : int   HTTP port (default 8086)
+    token  : str   InfluxDB API token
+    org    : str   InfluxDB organisation name
+    bucket : str   InfluxDB bucket name
     """
 
     def __init__(self, host, port, token, org, bucket):
@@ -76,8 +76,8 @@ class InfluxDBClient:
 
         Parameters
         ----------
-        device_id   : int   – IODR device number (e.g. 1, 2, 3)
-        od_readings : list  – list of (tube_number, od_value) tuples
+        device_id   : int    IODR device number (e.g. 1, 2, 3)
+        od_readings : list   list of (tube_number, od_value) tuples
                               tube_number is 1-indexed (matches Arduino convention)
 
         Returns HTTP status code.
@@ -104,8 +104,8 @@ class InfluxDBClient:
 
         Parameters
         ----------
-        device_id   : int   – IODR device number
-        temperature : float – temperature in degrees Celsius
+        device_id   : int    IODR device number
+        temperature : float  temperature in degrees Celsius
 
         Returns HTTP status code.
 
@@ -126,9 +126,9 @@ class InfluxDBClient:
 
         Parameters
         ----------
-        device_id   : int  – IODR device number
-        tube_number : int  – 1-indexed tube number
-        spectral_od : dict – mapping of wavelength label to OD value
+        device_id   : int   IODR device number
+        tube_number : int   1-indexed tube number
+        spectral_od : dict  mapping of wavelength label to OD value
                              e.g. {"violet": 0.1, "blue": 0.2, ...}
 
         Returns HTTP status code.
@@ -153,10 +153,10 @@ class InfluxDBClient:
 
         Parameters
         ----------
-        device_id   : int  – IODR device number
-        tube_number : int  – 1-indexed tube number
-        raw_values  : list – list of raw float readings
-        sensor_name : str  – sensor type ("temt6000", "veml6030", "as726x")
+        device_id   : int   IODR device number
+        tube_number : int   1-indexed tube number
+        raw_values  : list  list of raw float readings
+        sensor_name : str   sensor type ("temt6000", "veml6030", "as726x")
 
         Returns HTTP status code.
         """
