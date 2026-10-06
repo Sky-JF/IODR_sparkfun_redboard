@@ -246,7 +246,7 @@ def average_od_readings(reading_list):
     result = []
     for t in range(num_tubes):
         tube_num = reading_list[0][t][0]
-        valid    = [r[t][1] for r in reading_list if r[t][1] >= 0]
+        valid    = [r[t][1] for r in reading_list if r[t][1] >= -1.0]
         avg      = sum(valid) / len(valid) if valid else -1.0
         result.append((tube_num, avg))
     return result
